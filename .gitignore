@@ -1,0 +1,13 @@
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+System Volume Information/
+
+# Editor lock and swap files
+~$*
+*.swp
+*.swo
+*~

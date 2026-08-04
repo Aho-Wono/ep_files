@@ -1,49 +1,54 @@
 # ep_files
 
-自由に編集xしてください。GitHubの仕様上、100MBを超える単一ファイルはアップロードできません。
+加工データをGitHubで共有し、設計PCから公開、加工施設PCから取得するためのリポジトリです。
 
-## 加工データの自動整理
+GitHubの仕様上、100 MiBを超える単一ファイルは通常のGitではpushできません。
 
-リポジトリ内の加工データを、`加工機材/日付/ファイル` の形に一括整理できます。
+## 使うボタンは2つだけ
 
-例:
+### 設計PC・個人PC
+
+`push.cmd` をダブルクリックします。
+
+Inventorなどから出力した新しい `.cnc`・`.stl` を、日付フォルダへ整理してGitHubへ公開します。
+
+```text
+最新データを取得
+  → 新規ファイルを整理
+  → add・commit
+  → もう一度最新データを確認
+  → push
+```
+
+GitHubへのログインと、このリポジトリへの書き込み権限が必要です。
+
+### 加工施設PC・CNC付属PC
+
+`pull.cmd` をダブルクリックします。
+
+GitHubから最新データを取得するだけです。加工施設PCからadd・commit・pushは行いません。
+
+```text
+GitHubの更新を確認 → 安全に適用
+```
+
+publicリポジトリの取得だけなので、通常はGitHubへのログインや書き込み権限は不要です。
+
+## 加工データの整理形式
+
+新しい加工データは次の形に整理されます。
 
 ```text
 ep_files/
-└─ CNC/
+├─ CNC/
+│  └─ 2025-08-14/
+│     └─ part.cnc
+└─ STL/
    └─ 2025-08-14/
-      ├─ part.cnc
       └─ model.stl
 ```
 
-### ダブルクリックで使う
-
-- `tools/preview-organize.cmd`: 移動内容だけを表示します。初回はこちらで確認してください。
-- `organize.cmd`: 実際にフォルダを作成してファイルを移動します。
-
-同名ファイルが移動先にある場合は上書きせず、`part (2).cnc` のように連番を付けます。すでに正しい場所にあるファイルは移動しないため、何度実行しても構いません。
-
-### ターミナルから使う
-
-PowerShellでリポジトリのルートに移動して実行します。
-
-```powershell
-# プレビュー（ファイルを移動しない）
-.\tools\Organize-EpFiles.ps1 -WhatIf
-
-# 実行
-.\tools\Organize-EpFiles.ps1
-```
-
-PowerShellの実行ポリシーで止められるPCでは、次のコマンドを使えます。
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Organize-EpFiles.ps1
-```
-
-### 整理ルールを変更する
-
-`tools/organize.config.json` の `extensionToEquipment` に「拡張子: 加工機材フォルダ」を記載します。
+整理ルールは `tools/organize.config.json` で管理します。
 
 ```json
 {
@@ -57,8 +62,50 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\Organize-EpFiles
 
 `dateSource` は次から選べます。
 
-- `GitFirstAdded`（初期値）: Gitへ初めて追加したコミットの日付。まだGit管理されていないファイルはWindowsの作成日時。
+- `GitFirstAdded`（初期値）: Gitへ初めて追加したコミットの日付。Git未登録ファイルはWindowsの作成日時。
 - `CreationTime`: Windowsの作成日時。
 - `LastWriteTime`: ファイルの最終更新日時。
 
-GitでcloneしたファイルのWindows作成日時はcloneした日に変わるため、通常は `GitFirstAdded` が最も安定します。
+同名ファイルがある場合は上書きせず、`part (2).cnc` のように連番を付けます。修正版は、できれば `part_v2.cnc` のような分かりやすい新しい名前で追加してください。
+
+## 安全仕様
+
+### 設計PC用
+
+- 自動で公開するのは、設定済み拡張子の新規加工データだけです。
+- 既存のGit管理ファイルに変更や削除がある場合は、勝手にcommitせず停止します。
+- README、スクリプト、設定ファイル、関係のない形式は自動addしません。
+- 100 MiBを超えるファイルはcommit前に停止します。
+- 通信やpushに失敗しても、ローカルデータと作成済みcommitは残ります。原因を直して再実行できます。
+
+### 加工施設PC用
+
+- GitHub上の履歴へ安全に早送りできる場合だけ更新します。
+- ローカル変更、ローカルcommit、履歴の分岐がある場合は上書きせず停止します。
+- add・commit・push、加工データの整理は行いません。
+
+## GitHubへのログイン
+
+設計PCからpushするユーザーは、リポジトリの所有者またはCollaboratorとして登録されたGitHubアカウントでログインしてください。Git for Windowsに含まれるGit Credential Managerを使うと、初回push時にブラウザ認証が表示されます。
+
+Gitの作成者名・メールアドレスが未設定の共用PCでは、個人情報を公開しない共用PC用の値をこのリポジトリ内だけに自動設定します。個人名で記録したい場合は、公開前に次を設定します。
+
+```powershell
+git config user.name "表示名"
+git config user.email "GitHubのnoreplyメールアドレス"
+```
+
+## `.gitignore`
+
+`.gitignore` では、`Thumbs.db`、`Desktop.ini`、`.DS_Store`、エディタのswapファイルなどを除外します。
+
+`.tmp`、`.bak` などは加工工程で必要になる可能性があるため、一律では除外していません。
+
+## 内部ツール
+
+通常は `tools` フォルダを操作する必要はありません。
+
+- `Publish-EpFiles.ps1`: 設計PC用の公開処理
+- `Pull-EpFiles.ps1`: 加工施設PC用の読み取り専用更新処理
+- `Organize-EpFiles.ps1`: ファイル整理処理
+- `organize.config.json`: 整理ルール

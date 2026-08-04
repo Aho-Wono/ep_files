@@ -8,7 +8,10 @@ param(
 
     [Parameter()]
     [ValidateSet('GitFirstAdded', 'CreationTime', 'LastWriteTime')]
-    [string] $DateSource
+    [string] $DateSource,
+
+    [Parameter()]
+    [switch] $UntrackedOnly
 )
 
 Set-StrictMode -Version Latest
@@ -28,7 +31,7 @@ function Get-NormalizedExtension {
     return $normalized
 }
 
-function Get-GitFirstAddedDate {
+function Get-GitRelativePath {
     param(
         [Parameter(Mandatory)][string] $RepositoryRoot,
         [Parameter(Mandatory)][System.IO.FileInfo] $File
@@ -38,7 +41,16 @@ function Get-GitFirstAddedDate {
     $rootWithSeparator = $RepositoryRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
     $rootUri = [Uri] $rootWithSeparator
     $fileUri = [Uri] $File.FullName
-    $gitPath = [Uri]::UnescapeDataString($rootUri.MakeRelativeUri($fileUri).ToString())
+    return [Uri]::UnescapeDataString($rootUri.MakeRelativeUri($fileUri).ToString())
+}
+
+function Get-GitFirstAddedDate {
+    param(
+        [Parameter(Mandatory)][string] $RepositoryRoot,
+        [Parameter(Mandatory)][System.IO.FileInfo] $File
+    )
+
+    $gitPath = Get-GitRelativePath -RepositoryRoot $RepositoryRoot -File $File
 
     try {
         $dates = @(& git -C $RepositoryRoot log --follow --diff-filter=A --format=%aI -- $gitPath 2>$null)
@@ -54,6 +66,21 @@ function Get-GitFirstAddedDate {
     }
 
     return $null
+}
+
+function Test-GitTracked {
+    param(
+        [Parameter(Mandatory)][string] $RepositoryRoot,
+        [Parameter(Mandatory)][System.IO.FileInfo] $File
+    )
+
+    $gitPath = Get-GitRelativePath -RepositoryRoot $RepositoryRoot -File $File
+    $trackedPaths = @(& git -C $RepositoryRoot ls-files -- $gitPath 2>$null)
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0) {
+        return ($trackedPaths.Count -gt 0)
+    }
+    throw "Could not check Git tracking state for: $gitPath"
 }
 
 function Get-FileDate {
@@ -137,7 +164,7 @@ $configFullPath = [System.IO.Path]::GetFullPath($ConfigPath)
 
 $extensionMap = @{
     '.cnc' = 'CNC'
-    '.stl' = 'CNC'
+    '.stl' = 'STL'
 }
 $configuredDateSource = 'GitFirstAdded'
 
@@ -180,6 +207,7 @@ $gitDirectory = Join-Path $rootPath '.git'
 $reservedPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $moves = [System.Collections.Generic.List[object]]::new()
 $skipped = 0
+$trackedSkipped = 0
 
 $files = Get-ChildItem -LiteralPath $rootPath -Recurse -File -Force | Where-Object {
     -not $_.FullName.StartsWith(($gitDirectory + [System.IO.Path]::DirectorySeparatorChar), [System.StringComparison]::OrdinalIgnoreCase)
@@ -194,6 +222,10 @@ foreach ($file in $files) {
     $equipment = $extensionMap[$extension]
     if (Test-IsOrganizedLocation -RepositoryRoot $rootPath -Equipment $equipment -File $file) {
         $skipped++
+        continue
+    }
+    if ($UntrackedOnly -and (Test-GitTracked -RepositoryRoot $rootPath -File $file)) {
+        $trackedSkipped++
         continue
     }
 
@@ -239,4 +271,7 @@ else {
 
 if ($skipped -gt 0) {
     Write-Host ("Already organized: {0} file(s)." -f $skipped) -ForegroundColor DarkGray
+}
+if ($trackedSkipped -gt 0) {
+    Write-Host ("Tracked files left unchanged: {0} file(s)." -f $trackedSkipped) -ForegroundColor DarkGray
 }

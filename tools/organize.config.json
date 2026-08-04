@@ -1,7 +1,9 @@
 {
   "extensionToEquipment": {
     ".cnc": "CNC",
-    ".stl": "STL"
+    ".stl": "STL",
+    ".nc": "NC",
+    ".dxf": "DXF"
   },
   "dateSource": "GitFirstAdded"
 }
