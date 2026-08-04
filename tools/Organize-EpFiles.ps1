@@ -83,6 +83,24 @@ function Test-GitTracked {
     throw "Could not check Git tracking state for: $gitPath"
 }
 
+function Test-GitIgnored {
+    param(
+        [Parameter(Mandatory)][string] $RepositoryRoot,
+        [Parameter(Mandatory)][System.IO.FileInfo] $File
+    )
+
+    $gitPath = Get-GitRelativePath -RepositoryRoot $RepositoryRoot -File $File
+    & git -C $RepositoryRoot check-ignore --quiet -- $gitPath
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0) {
+        return $true
+    }
+    if ($exitCode -eq 1) {
+        return $false
+    }
+    throw "Could not check Git ignore state for: $gitPath"
+}
+
 function Get-FileDate {
     param(
         [Parameter(Mandatory)][string] $RepositoryRoot,
@@ -166,6 +184,7 @@ $extensionMap = @{
     '.cnc' = 'CNC'
     '.stl' = 'STL'
 }
+$unregisteredEquipment = 'others'
 $configuredDateSource = 'GitFirstAdded'
 
 if (Test-Path -LiteralPath $configFullPath -PathType Leaf) {
@@ -191,6 +210,9 @@ if (Test-Path -LiteralPath $configFullPath -PathType Leaf) {
     if (-not [string]::IsNullOrWhiteSpace([string] $config.dateSource)) {
         $configuredDateSource = [string] $config.dateSource
     }
+    if ($null -ne $config.PSObject.Properties['unregisteredEquipment']) {
+        $unregisteredEquipment = ([string] $config.unregisteredEquipment).Trim()
+    }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($DateSource)) {
@@ -202,29 +224,51 @@ if ($configuredDateSource -notin @('GitFirstAdded', 'CreationTime', 'LastWriteTi
 if ($extensionMap.Count -eq 0) {
     throw 'extensionToEquipment does not contain any file extensions.'
 }
+if ([string]::IsNullOrWhiteSpace($unregisteredEquipment) -or
+    [System.IO.Path]::IsPathRooted($unregisteredEquipment) -or
+    ($unregisteredEquipment -match '[\\/]') -or
+    ($unregisteredEquipment -in @('.', '..'))) {
+    throw "The unregisteredEquipment value must be a single directory name: $unregisteredEquipment"
+}
+if ($extensionMap.Values -contains $unregisteredEquipment) {
+    throw "unregisteredEquipment must differ from registered equipment directories: $unregisteredEquipment"
+}
 
 $gitDirectory = Join-Path $rootPath '.git'
+$isGitRepository = Test-Path -LiteralPath $gitDirectory
+$toolsDirectory = Join-Path $rootPath 'tools'
+$protectedRootFiles = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+@('README.md', '.gitignore', 'push.cmd', 'pull.cmd') | ForEach-Object {
+    [void] $protectedRootFiles.Add($_)
+}
 $reservedPaths = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
 $moves = [System.Collections.Generic.List[object]]::new()
 $skipped = 0
 $trackedSkipped = 0
 
 $files = Get-ChildItem -LiteralPath $rootPath -Recurse -File -Force | Where-Object {
-    -not $_.FullName.StartsWith(($gitDirectory + [System.IO.Path]::DirectorySeparatorChar), [System.StringComparison]::OrdinalIgnoreCase)
+    (-not $_.FullName.StartsWith(($gitDirectory + [System.IO.Path]::DirectorySeparatorChar), [System.StringComparison]::OrdinalIgnoreCase)) -and
+    (-not $_.FullName.StartsWith(($toolsDirectory + [System.IO.Path]::DirectorySeparatorChar), [System.StringComparison]::OrdinalIgnoreCase))
 }
 
 foreach ($file in $files) {
-    $extension = $file.Extension.ToLowerInvariant()
-    if (-not $extensionMap.ContainsKey($extension)) {
+    if ($file.Directory.FullName.Equals($rootPath, [System.StringComparison]::OrdinalIgnoreCase) -and
+        $protectedRootFiles.Contains($file.Name)) {
+        continue
+    }
+    if ($isGitRepository -and (Test-GitIgnored -RepositoryRoot $rootPath -File $file)) {
         continue
     }
 
-    $equipment = $extensionMap[$extension]
+    $extension = $file.Extension.ToLowerInvariant()
+    $isRegisteredExtension = $extensionMap.ContainsKey($extension)
+    $equipment = if ($isRegisteredExtension) { $extensionMap[$extension] } else { $unregisteredEquipment }
     if (Test-IsOrganizedLocation -RepositoryRoot $rootPath -Equipment $equipment -File $file) {
         $skipped++
         continue
     }
-    if ($UntrackedOnly -and (Test-GitTracked -RepositoryRoot $rootPath -File $file)) {
+    if ($isGitRepository -and ($UntrackedOnly -or (-not $isRegisteredExtension)) -and
+        (Test-GitTracked -RepositoryRoot $rootPath -File $file)) {
         $trackedSkipped++
         continue
     }

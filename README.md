@@ -22,6 +22,12 @@ Inventorなどから出力した新しい `.cnc`・`.stl` を、日付フォル�
 
 GitHubへのログインと、このリポジトリへの書き込み権限が必要です。
 
+自動commitでは、追加した合計件数と拡張子別件数を表示し、commitメッセージにも記録します。
+
+```text
+Add 5 machining files (.cnc: 2, .stl: 3)
+```
+
 ### 加工施設PC・CNC付属PC
 
 `pull.cmd` をダブルクリックします。
@@ -43,9 +49,12 @@ ep_files/
 ├─ CNC/
 │  └─ 2025-08-14/
 │     └─ part.cnc
-└─ STL/
+├─ STL/
+│  └─ 2025-08-14/
+│     └─ model.stl
+└─ others/
    └─ 2025-08-14/
-      └─ model.stl
+      └─ unregistered-file.pdf
 ```
 
 整理ルールは `tools/organize.config.json` で管理します。
@@ -54,11 +63,16 @@ ep_files/
 {
   "extensionToEquipment": {
     ".cnc": "CNC",
-    ".stl": "STL"
+    ".stl": "STL",
+    ".nc": "NC",
+    ".dxf": "DXF"
   },
+  "unregisteredEquipment": "others",
   "dateSource": "GitFirstAdded"
 }
 ```
+
+登録されていない拡張子と拡張子なしのファイルは、`others/YYYY-MM-DD/` へ整理して一緒にpushします。README、`push.cmd`、`pull.cmd`、`.gitignore`、`tools` 配下は管理ファイルとして対象外です。
 
 `dateSource` は次から選べます。
 

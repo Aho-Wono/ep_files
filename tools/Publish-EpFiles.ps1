@@ -120,6 +120,7 @@ Assert-TrackedFilesClean
 
 $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
 $extensionMap = @{}
+$unregisteredEquipment = 'others'
 foreach ($property in $config.extensionToEquipment.PSObject.Properties) {
     $extension = $property.Name.Trim().ToLowerInvariant()
     if (-not $extension.StartsWith('.')) {
@@ -137,7 +138,19 @@ foreach ($property in $config.extensionToEquipment.PSObject.Properties) {
 if ($extensionMap.Count -eq 0) {
     throw 'No extension rules were found in the organizer config.'
 }
-$equipmentDirectories = @($extensionMap.Values | Sort-Object -Unique)
+if ($null -ne $config.PSObject.Properties['unregisteredEquipment']) {
+    $unregisteredEquipment = ([string] $config.unregisteredEquipment).Trim()
+}
+if ([string]::IsNullOrWhiteSpace($unregisteredEquipment) -or
+    [System.IO.Path]::IsPathRooted($unregisteredEquipment) -or
+    ($unregisteredEquipment -match '[\\/]') -or
+    ($unregisteredEquipment -in @('.', '..'))) {
+    throw "Invalid unregistered equipment directory in organizer config: $unregisteredEquipment"
+}
+if ($extensionMap.Values -contains $unregisteredEquipment) {
+    throw "unregisteredEquipment must differ from registered equipment directories: $unregisteredEquipment"
+}
+$equipmentDirectories = @((@($extensionMap.Values) + $unregisteredEquipment) | Sort-Object -Unique)
 
 Write-Host ("[1/5] Pulling origin/{0}..." -f $branch) -ForegroundColor Cyan
 Invoke-Git -Arguments @('pull', '--rebase', 'origin', $branch) -FailureMessage 'Pull failed. No local machining data was deleted.'
@@ -181,8 +194,13 @@ foreach ($entry in $stagedEntries) {
         [System.Globalization.DateTimeStyles]::None,
         [ref] $parsedDate
     )
-    if ((-not $extensionMap.ContainsKey($fileExtension)) -or
-        (-not $segments[0].Equals($extensionMap[$fileExtension], [System.StringComparison]::OrdinalIgnoreCase)) -or
+    $expectedEquipment = if ($extensionMap.ContainsKey($fileExtension)) {
+        $extensionMap[$fileExtension]
+    }
+    else {
+        $unregisteredEquipment
+    }
+    if ((-not $segments[0].Equals($expectedEquipment, [System.StringComparison]::OrdinalIgnoreCase)) -or
         (-not $validDate)) {
         $invalidEntries.Add($entry)
         continue
@@ -199,7 +217,7 @@ if ($invalidEntries.Count -gt 0) {
     Reset-DataStaging -Directories $existingEquipmentDirectories
     Write-Host 'Files rejected by the add-only safety check:' -ForegroundColor Yellow
     $invalidEntries | ForEach-Object { Write-Host ("  {0}" -f $_) -ForegroundColor Yellow }
-    throw 'Only new configured machining files under EQUIPMENT/YYYY-MM-DD can be uploaded.'
+    throw 'Only newly organized files under EQUIPMENT/YYYY-MM-DD can be uploaded.'
 }
 if ($oversizedEntries.Count -gt 0) {
     Reset-DataStaging -Directories $existingEquipmentDirectories
@@ -209,6 +227,34 @@ if ($oversizedEntries.Count -gt 0) {
 }
 
 if ($stagedEntries.Count -gt 0) {
+    $extensionCounts = @{}
+    foreach ($entry in $stagedEntries) {
+        $entryParts = $entry -split "`t", 2
+        $entryExtension = [System.IO.Path]::GetExtension($entryParts[1]).ToLowerInvariant()
+        if ([string]::IsNullOrWhiteSpace($entryExtension)) {
+            $entryExtension = '<no extension>'
+        }
+        if ($extensionCounts.ContainsKey($entryExtension)) {
+            $extensionCounts[$entryExtension]++
+        }
+        else {
+            $extensionCounts[$entryExtension] = 1
+        }
+    }
+
+    $summaryParts = @($extensionCounts.GetEnumerator() | Sort-Object Name | ForEach-Object {
+        "{0}: {1}" -f $_.Name, $_.Value
+    })
+    $fileWord = if ($stagedEntries.Count -eq 1) { 'file' } else { 'files' }
+    $commitMessage = "Add {0} machining {1} ({2})" -f $stagedEntries.Count, $fileWord, ($summaryParts -join ', ')
+
+    Write-Host 'Files to publish:' -ForegroundColor Cyan
+    $extensionCounts.GetEnumerator() | Sort-Object Name | ForEach-Object {
+        Write-Host ("  {0}: {1}" -f $_.Name, $_.Value) -ForegroundColor Cyan
+    }
+    Write-Host ("  Total: {0}" -f $stagedEntries.Count) -ForegroundColor Cyan
+    Write-Host ("Commit message: {0}" -f $commitMessage) -ForegroundColor DarkGray
+
     $userName = @(& git -C $rootPath config --get user.name 2>$null)
     if (($LASTEXITCODE -ne 0) -or ($userName.Count -eq 0) -or [string]::IsNullOrWhiteSpace($userName[0])) {
         Invoke-Git -Arguments @('config', 'user.name', 'EP Files Facility') -FailureMessage 'Could not configure the local Git author name.'
@@ -220,7 +266,6 @@ if ($stagedEntries.Count -gt 0) {
         Write-Host 'A private local-only Git author email was configured.' -ForegroundColor DarkGray
     }
 
-    $commitMessage = 'Add machining data {0}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm')
     Invoke-Git -Arguments @('commit', '-m', $commitMessage) -FailureMessage 'Could not create the local commit.'
 }
 else {
