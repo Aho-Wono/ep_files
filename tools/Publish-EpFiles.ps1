@@ -48,8 +48,17 @@ function Get-GitOutput {
         [string] $FailureMessage
     )
 
-    $output = @(& git -C $rootPath @Arguments 2>$null)
-    $exitCode = $LASTEXITCODE
+    # Git writes paths as UTF-8. Windows PowerShell 5.1 decodes native output with
+    # the console code page (CP932 on Japanese Windows), which garbles non-ASCII names.
+    $previousOutputEncoding = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        $output = @(& git -C $rootPath -c core.quotepath=false @Arguments 2>$null)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        [Console]::OutputEncoding = $previousOutputEncoding
+    }
     if ($exitCode -ne 0) {
         throw ("{0} (Git exit code: {1})" -f $FailureMessage, $exitCode)
     }
@@ -168,49 +177,56 @@ if ($existingEquipmentDirectories.Count -gt 0) {
     Invoke-Git -Arguments (@('add', '--ignore-removal', '--') + $existingEquipmentDirectories) -FailureMessage 'Could not stage machining data.'
 }
 
-$stagedEntries = @(Get-GitOutput -Arguments @('-c', 'core.quotepath=false', 'diff', '--cached', '--name-status') -FailureMessage 'Could not validate staged files.')
+$stagedEntries = @(Get-GitOutput -Arguments @('diff', '--cached', '--name-status') -FailureMessage 'Could not validate staged files.')
 $invalidEntries = [System.Collections.Generic.List[string]]::new()
 $oversizedEntries = [System.Collections.Generic.List[string]]::new()
-foreach ($entry in $stagedEntries) {
-    $parts = $entry -split "`t", 2
-    if (($parts.Count -ne 2) -or ($parts[0] -ne 'A')) {
-        $invalidEntries.Add($entry)
-        continue
-    }
+# Restore the staging area if validation fails unexpectedly, so the next run is not blocked.
+try {
+    foreach ($entry in $stagedEntries) {
+        $parts = $entry -split "`t", 2
+        if (($parts.Count -ne 2) -or ($parts[0] -ne 'A')) {
+            $invalidEntries.Add($entry)
+            continue
+        }
 
-    $gitPath = $parts[1].Replace('\', '/')
-    $segments = $gitPath.Split('/')
-    if ($segments.Count -ne 3) {
-        $invalidEntries.Add($entry)
-        continue
-    }
+        $gitPath = $parts[1].Replace('\', '/')
+        $segments = $gitPath.Split('/')
+        if ($segments.Count -ne 3) {
+            $invalidEntries.Add($entry)
+            continue
+        }
 
-    $fileExtension = [System.IO.Path]::GetExtension($segments[2]).ToLowerInvariant()
-    $parsedDate = [DateTime]::MinValue
-    $validDate = [DateTime]::TryParseExact(
-        $segments[1],
-        'yyyy-MM-dd',
-        [System.Globalization.CultureInfo]::InvariantCulture,
-        [System.Globalization.DateTimeStyles]::None,
-        [ref] $parsedDate
-    )
-    $expectedEquipment = if ($extensionMap.ContainsKey($fileExtension)) {
-        $extensionMap[$fileExtension]
-    }
-    else {
-        $unregisteredEquipment
-    }
-    if ((-not $segments[0].Equals($expectedEquipment, [System.StringComparison]::OrdinalIgnoreCase)) -or
-        (-not $validDate)) {
-        $invalidEntries.Add($entry)
-        continue
-    }
+        $fileExtension = [System.IO.Path]::GetExtension($segments[2]).ToLowerInvariant()
+        $parsedDate = [DateTime]::MinValue
+        $validDate = [DateTime]::TryParseExact(
+            $segments[1],
+            'yyyy-MM-dd',
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::None,
+            [ref] $parsedDate
+        )
+        $expectedEquipment = if ($extensionMap.ContainsKey($fileExtension)) {
+            $extensionMap[$fileExtension]
+        }
+        else {
+            $unregisteredEquipment
+        }
+        if ((-not $segments[0].Equals($expectedEquipment, [System.StringComparison]::OrdinalIgnoreCase)) -or
+            (-not $validDate)) {
+            $invalidEntries.Add($entry)
+            continue
+        }
 
-    $workingFilePath = Join-Path $rootPath $gitPath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
-    $workingFile = Get-Item -LiteralPath $workingFilePath
-    if ($workingFile.Length -gt 100MB) {
-        $oversizedEntries.Add(("{0} ({1:N1} MiB)" -f $gitPath, ($workingFile.Length / 1MB)))
+        $workingFilePath = Join-Path $rootPath $gitPath.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+        $workingFile = Get-Item -LiteralPath $workingFilePath
+        if ($workingFile.Length -gt 100MB) {
+            $oversizedEntries.Add(("{0} ({1:N1} MiB)" -f $gitPath, ($workingFile.Length / 1MB)))
+        }
     }
+}
+catch {
+    Reset-DataStaging -Directories $existingEquipmentDirectories
+    throw
 }
 
 if ($invalidEntries.Count -gt 0) {

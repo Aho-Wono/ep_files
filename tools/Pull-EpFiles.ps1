@@ -46,8 +46,17 @@ function Get-GitOutput {
         [string] $FailureMessage
     )
 
-    $output = @(& git -C $rootPath @Arguments 2>$null)
-    $exitCode = $LASTEXITCODE
+    # Git writes paths as UTF-8. Windows PowerShell 5.1 decodes native output with
+    # the console code page (CP932 on Japanese Windows), which garbles non-ASCII names.
+    $previousOutputEncoding = [Console]::OutputEncoding
+    try {
+        [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        $output = @(& git -C $rootPath -c core.quotepath=false @Arguments 2>$null)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        [Console]::OutputEncoding = $previousOutputEncoding
+    }
     if ($exitCode -ne 0) {
         throw ("{0} (Git exit code: {1})" -f $FailureMessage, $exitCode)
     }
